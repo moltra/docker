@@ -4,21 +4,17 @@ version: "3.9"
 # Docker Compose version 3.5 or higher required to define networks this way.
  
 networks:
-
-  t2_proxy:
-    name: t2_proxy
+  socket_proxy:
+    name: socket_proxy
     driver: bridge
     ipam:
       config:
-        - subnet: 192.168.90.0/24
-  default:
-    driver: bridge
-  # socket_proxy:
-  #   name: socket_proxy
-  #   driver: bridge
-  #   ipam:
-  #     config:
-  #       - subnet: 192.168.91.0/24
+        - subnet: 192.168.91.0/24
+
+########################### SECRETS
+secrets:
+  traefik_forward_auth:
+    file: $DOCKERDIR/secrets/traefik_forward_auth
 
 ########################### EXTENSION FIELDS
 # Helps eliminate repetition of sections
@@ -33,7 +29,8 @@ x-environment: &default-tz-puid-pgid
 # Keys common to some of the core services that we always to automatically restart on failure
 x-common-keys-core: &common-keys-core
   networks:
-    - t2_proxy
+    #  - t2_proxy
+    - socket_proxy
   security_opt:
     - no-new-privileges:true
   restart: always
@@ -41,7 +38,8 @@ x-common-keys-core: &common-keys-core
 # Keys common to some of the dependent services/apps
 x-common-keys-apps: &common-keys-apps
   networks:
-    - t2_proxy
+    #  - t2_proxy
+    - socket_proxy
   security_opt:
     - no-new-privileges:true
   restart: unless-stopped
@@ -49,7 +47,8 @@ x-common-keys-apps: &common-keys-apps
 # Keys common to some of the services in media-services.txt
 x-common-keys-media: &common-keys-media
   networks:
-    - t2_proxy
+    #  - t2_proxy
+    - socket_proxy
   security_opt:
     - no-new-privileges:true
   restart: "no"
@@ -103,11 +102,9 @@ services:
       - --certificatesResolvers.dns-cloudflare.acme.dnsChallenge.resolvers=1.1.1.1:53,1.0.0.1:53
       - --certificatesResolvers.dns-cloudflare.acme.dnsChallenge.delayBeforeCheck=90 # To delay DNS check and reduce LE hitrate
     networks:
-      t2_proxy:
+      # t2_proxy:
       # ipv4_address: 192.168.90.254 # You can specify a static IP
-      # socket_proxy:
-    # networks:
-    #  - t2_proxy
+      socket_proxy:
     ports:
       - target: 80
         published: 80
@@ -126,7 +123,7 @@ services:
       - $DOCKERDIR/appdata/traefik2/rules/cloudserver:/rules # file provider directory
       - /var/run/docker.sock:/var/run/docker.sock:ro # If you use Docker Socket Proxy, comment this line out
       - $DOCKERDIR/appdata/traefik2/acme/acme.json:/acme.json # cert location - you must create this empty file and change permissions to 600
-      - $DOCKERDIR/logs/traefik:/logs # for fail2ban or crowdsec
+      - $DOCKERDIR/logs/cloudserver/traefik:/logs # for fail2ban or crowdsec
       - $DOCKERDIR/shared:/shared
     environment:
       - TZ=$TZ
@@ -152,7 +149,14 @@ services:
       ## Services - API
       - "traefik.http.routers.traefik-rtr.service=api@internal"
       ## Middlewares
-      - "traefik.http.routers.traefik-rtr.middlewares=middlewares-rate-limit@file,middlewares-https-redirectscheme@file,middlewares-secure-headers@file,middlewares-basic-auth@file,middlewares-compress@file"
+      ## Healthcheck/ping
+      #- "traefik.http.routers.ping.rule=Host(`traefik.$DOMAINNAME_CLOUD_SERVER`) && Path(`/ping`)"
+      #- "traefik.http.routers.ping.tls=true"
+      #- "traefik.http.routers.ping.service=ping@internal"
+      ## Middlewares
+      #- "traefik.http.routers.traefik-rtr.middlewares=chain-no-auth@file" # For No Authentication
+      #- "traefik.http.routers.traefik-rtr.middlewares=chain-basic-auth@file" # For Basic HTTP Authentication
+      - "traefik.http.routers.traefik-rtr.middlewares=chain-oauth@file" # For Google OAuth
 # Dozzle - Real-time Docker Log Viewer
   dozzle:
     image: amir20/dozzle:latest
@@ -160,58 +164,302 @@ services:
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped
+   # profiles: ["apps", "all"]
     networks:
-      - t2_proxy
-      # - socket_proxy
+      # - t2_proxy
+      - socket_proxy
     ports:
       - "8082:8080"
-    #environment:
-      # DOZZLE_LEVEL: debug
-      # DOZZLE_TAILSIZE: 300
-      # DOZZLE_FILTER: "status=running"
+    environment:
+      DOZZLE_LEVEL: info
+      DOZZLE_TAILSIZE: 300
+      DOZZLE_FILTER: "status=running"
       # DOZZLE_FILTER: "label=log_me" # limits logs displayed to containers with this label
-      # DOCKER_HOST: tcp://socket-proxy:2375
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock # Use Docker Socket Proxy instead for improved security
+      DOCKER_HOST: tcp://socket-proxy:2375
+    # volumes:
+    #  - /var/run/docker.sock:/var/run/docker.sock # Use Docker Socket Proxy instead for improved security
     labels:
       - "traefik.enable=true"
       ## HTTP Routers
       - "traefik.http.routers.dozzle-rtr.entrypoints=https"
       - "traefik.http.routers.dozzle-rtr.rule=Host(`dozzle.$DOMAINNAME_CLOUD_SERVER`)"
       ## Middlewares
-      - "traefik.http.routers.dozzle-rtr.middlewares=chain-basic-auth@file"
+      - "traefik.http.routers.dozzle-rtr.middlewares=chain-oauth@file"
       ## HTTP Services
       - "traefik.http.routers.dozzle-rtr.service=dozzle-svc"
       - "traefik.http.services.dozzle-svc.loadbalancer.server.port=8080"
-# Portainer - WebUI for Containers
-  portainer:
+# Heimdall - Application Dashboard
+  heimdall:
     <<: *common-keys-core # See EXTENSION FIELDS at the top
-    container_name: portainer
-    image: portainer/portainer-ee:latest
-    # command: -H unix:///var/run/docker.sock # Use Docker Socket Proxy and comment this line out, for improved security.
-    # command: -H tcp://socket-proxy:2375 # Use this instead, if you have Socket Proxy enabled.
+    image: lscr.io/linuxserver/heimdall
+    container_name: heimdall
+    # ports:
+      # - "$HEIMDALL_HTTP_PORT:80" # 80 used by Traefik
+      # - "$HEIMDALL_HTTPS_PORT:443" # 443 used by Traefik. Disabled because we will put Heimdall behind proxy.
     networks:
-      - t2_proxy
-    ports: # Commented out because we are going to use Traefik to access portainer WebUI.
-    #  - "$PORTAINER_PORT:9000"
-      - 9000:9000
+      - socket_proxy
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro # Use Docker Socket Proxy and comment this line out, for improved security.
-      - $DOCKERDIR/appdata/portainer/data:/data # Change to local directory if you want to save/transfer config locally.
+      - $DOCKERDIR/appdata/heimdall:/config
     environment:
-      - TZ=$TZ
+      <<: *default-tz-puid-pgid
     labels:
       - "traefik.enable=true"
       ## HTTP Routers
-      - "traefik.http.routers.portainer-rtr.entrypoints=https"
-      - "traefik.http.routers.portainer-rtr.rule=Host(`portainer.$DOMAINNAME_CLOUD_SERVER`)"
-      # - "traefik.http.routers.portainer-rtr.tls=true"
+      - "traefik.http.routers.heimdall-rtr.entrypoints=https"
+      - "traefik.http.routers.heimdall-rtr.rule=Host(`$DOMAINNAME_CLOUD_SERVER`,`www.$DOMAINNAME_CLOUD_SERVER`)"
+      - "traefik.http.routers.heimdall-rtr.tls=true"
       ## Middlewares
-      - "traefik.http.routers.portainer-rtr.middlewares=chain-basic-auth@file"
+      - "traefik.http.routers.heimdall-rtr.middlewares=chain-oauth@file"
       ## HTTP Services
-      - "traefik.http.routers.portainer-rtr.service=portainer-svc"
-      - "traefik.http.services.portainer-svc.loadbalancer.server.port=9000"
-
-      # - traefik.http.routers.portainer-secure.entrypoints=websecure
-      # - traefik.http.routers.portainer-secure.service=portainer
-      # - traefik.http.services.portainer.loadbalancer.server.port=9000
+      - "traefik.http.routers.heimdall-rtr.service=heimdall-svc"
+      - "traefik.http.services.heimdall-svc.loadbalancer.server.port=80"
+# Google OAuth - Single Sign On using OAuth 2.0
+  oauth:
+    <<: *common-keys-core # See EXTENSION FIELDS at the top
+    container_name: oauth
+    image: thomseddon/traefik-forward-auth:latest
+    # image: thomseddon/traefik-forward-auth:2.1-arm # Use this image with Raspberry Pi
+    environment:
+      - CONFIG=/config
+      - COOKIE_DOMAIN=$DOMAINNAME_CLOUD_SERVER
+      - INSECURE_COOKIE=false
+      - AUTH_HOST=oauth.$DOMAINNAME_CLOUD_SERVER
+      - URL_PATH=/_oauth
+      - LOG_LEVEL=info
+      - LOG_FORMAT=text
+      - LIFETIME=2592000  # 30 days
+      - DEFAULT_ACTION=auth
+      - DEFAULT_PROVIDER=google
+    secrets:
+      - source: traefik_forward_auth
+        target: /config
+    labels:
+      - "traefik.enable=true"
+      ## HTTP Routers
+      - "traefik.http.routers.oauth-rtr.tls=true"
+      - "traefik.http.routers.oauth-rtr.entrypoints=https"
+      - "traefik.http.routers.oauth-rtr.rule=Host(`oauth.$DOMAINNAME_CLOUD_SERVER`)"
+      ## Middlewares
+      - "traefik.http.routers.oauth-rtr.middlewares=chain-oauth@file"
+      ## HTTP Services
+      - "traefik.http.routers.oauth-rtr.service=oauth-svc"
+      - "traefik.http.services.oauth-svc.loadbalancer.server.port=4181"
+  it-tools:
+    image: corentinth/it-tools
+    container_name: it-tools
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    profiles: ["apps", "all"]
+    networks:
+      - socket_proxy
+    labels:
+      - "traefik.enable=true"
+      ## HTTP Routers
+      - "traefik.http.routers.it-tools-rtr.entrypoints=https"
+      - "traefik.http.routers.it-tools-rtr.rule=Host(`tools.$DOMAINNAME_CLOUD_SERVER`)"
+      ## Middlewares
+      - "traefik.http.routers.it-tools-rtr.middlewares=chain-oauth@file"
+      ## HTTP Services
+      - "traefik.http.routers.it-tools-rtr.service=it-tools-svc"
+      - "traefik.http.services.it-tools-svc.loadbalancer.server.port=80"
+# Docker-GC - Automatic Docker Garbage Collection
+# Create docker-gc-exclude file
+  dockergc:
+    <<: *common-keys-apps # See EXTENSION FIELDS at the top
+    image: clockworksoul/docker-gc-cron:latest
+    container_name: docker-gc
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock # Use Docker Socket Proxy and comment this line for improved security.
+      - $DOCKERDIR/appdata/docker-gc/docker-gc-exclude:/etc/docker-gc-exclude # Create empty file
+    environment:
+      CRON: 0 0 0 * * ? # Everyday at midnight. Previously 0 0 * * *
+      FORCE_IMAGE_REMOVAL: 1
+      FORCE_CONTAINER_REMOVAL: 0
+      GRACE_PERIOD_SECONDS: 604800
+      DRY_RUN: 0
+      CLEAN_UP_VOLUMES: 1
+      TZ: $TZ
+      DOCKER_HOST: tcp://socket-proxy:2375 # Use this if you have Socket Proxy enabled.
+# Docker Socket Proxy - Security Enchanced Proxy for Docker Socket
+  socket-proxy:
+    container_name: socket-proxy
+    image: tecnativa/docker-socket-proxy
+    restart: always
+    networks:
+      socket_proxy:
+        ipv4_address: 192.168.91.254 # You can specify a static IP
+    # privileged: true # true for VM. False for unprivileged LXC container.
+    ports:
+      - "127.0.0.1:2375:2375" # Port 2375 should only ever get exposed to the internal network. When possible use this line.
+    # I use the next line instead, as I want portainer to manage multiple docker endpoints within my home network.
+    # - "2375:2375"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+    environment:
+      - LOG_LEVEL=info # debug,info,notice,warning,err,crit,alert,emerg
+      ## Variables match the URL prefix (i.e. AUTH blocks access to /auth/* parts of the API, etc.).
+      # 0 to revoke access.
+      # 1 to grant access.
+      ## Granted by Default
+      - EVENTS=1
+      - PING=1
+      - VERSION=1
+      ## Revoked by Default
+      # Security critical
+      - AUTH=0
+      - SECRETS=0
+      - POST=1 # Watchtower
+      # Not always needed
+      - BUILD=0
+      - COMMIT=0
+      - CONFIGS=0
+      - CONTAINERS=1 # Traefik, portainer, etc.
+      - DISTRIBUTION=0
+      - EXEC=0
+      - IMAGES=1 # Portainer
+      - INFO=1 # Portainer
+      - NETWORKS=1 # Portainer
+      - NODES=0
+      - PLUGINS=0
+      - SERVICES=1 # Portainer
+      - SESSION=0
+      - SWARM=0
+      - SYSTEM=0
+      - TASKS=1 # Portainer
+      - VOLUMES=1 # Portainer
+  # Grafana - Graphical data visualization for InfluxDB data
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    profiles: ["apps", "all"]
+    networks:
+      - socket_proxy
+    ports:
+      - "3000:3000"
+    user: $PUID
+    volumes:
+      - $DOCKERDIR/appdata/grafana:/var/lib/grafana
+    environment:
+      GF_INSTALL_PLUGINS: "grafana-clock-panel,grafana-simple-json-datasource,grafana-worldmap-panel,grafana-piechart-panel"
+    labels:
+      - "traefik.enable=true"
+      ## HTTP Routers
+      - "traefik.http.routers.grafana-rtr.entrypoints=https"
+      - "traefik.http.routers.grafana-rtr.rule=Host(`grafana.$DOMAINNAME_CLOUD_SERVER`)"
+      ## Middlewares
+      - "traefik.http.routers.grafana-rtr.middlewares=chain-oauth@file"
+      ## HTTP Services
+      - "traefik.http.routers.grafana-rtr.service=grafana-svc"
+      - "traefik.http.services.grafana-svc.loadbalancer.server.port=3000"
+   # Gluetun - VPN Client for Docker Containers and More
+  # Gluetun only for use by torrent clients + on demand lan devices.
+  # Arr apps do not need VPN (not recommended), unless you have ISP/country restrictions.
+  gluetun:
+    image: qmcgaw/gluetun
+    container_name: gluetun
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    #profiles: ["core", "all"]
+    networks:
+      - socket_proxy
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
+    ports:
+      - "8081:8080" # Exposing qBittorrent through Docker Host LAN IP
+    # #   - 8888:8888/tcp # HTTP proxy
+    # #   - 8388:8388/tcp # Shadowsocks
+    # #   - 8388:8388/udp # Shadowsocks
+    volumes:
+      - $DOCKERDIR/appdata/gluetun:/gluetun
+    environment:
+      TZ: $TZ
+      VPN_SERVICE_PROVIDER: private internet access
+      VPN_TYPE: openvpn
+      SERVER_REGIONS: $VPN_REGIONS
+      OPENVPN_USER: $VPN_USERNAME
+      OPENVPN_PASSWORD: $VPN_PASSWORD
+    labels:
+      - "traefik.enable=true"
+      ## HTTP Routers
+      - "traefik.http.routers.gluetun-qbittorrent-rtr.entrypoints=https"
+      - "traefik.http.routers.gluetun-qbittorrent-rtr.rule=Host(`qbit.$DOMAINNAME_CLOUD_SERVER`)" # qBittorrent
+      ## Middlewares
+      - "traefik.http.routers.gluetun-qbittorrent-rtr.middlewares=chain-oauth@file" # qBittorrent
+      ## HTTP Services
+      - "traefik.http.routers.gluetun-qbittorrent-rtr.service=gluetun-svc" # qBittorrent
+      - "traefik.http.services.gluetun-svc.loadbalancer.server.port=8080" # qBittorrent
+  # qBittorrent - Torrent downloader
+  # Needs trailing / if using PathPrefixStrip
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    #profiles: ["apps", "all"]
+    network_mode: "service:gluetun"
+    # ports:
+    #   - "8081:8080" # Explosed via gluetun. 8081 because crowdsec is using port 8080
+    volumes:
+      - $DOCKERDIR/appdata/qbittorrent:/config
+      - $DATADIR/downloads:/data/downloads # Ensure that downloads folder is set to /data/downloads in qBittorrent
+    environment:
+      TZ: $TZ
+      PUID: $PUID
+      PGID: $PGID
+      UMASK_SET: 002
+    healthcheck: # https://github.com/qdm12/gluetun/issues/641#issuecomment-933856220
+      test: "curl -sf https://example.com  || exit 1"
+      interval: 1m
+      timeout: 10s
+      retries: 1
+      FIREWALL_OUTBOUND_SUBNETS: 192.168.1.0/24
+    labels: # Traefik labels added via glueten
+      - "deunhealth.restart.on.unhealthy=true"
+  # File Browser - Explorer
+  filebrowser:
+    image: filebrowser/filebrowser:s6
+    container_name: filebrowser
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    #profiles: ["apps", "all"]
+    networks:
+      - socket_proxy
+    ports:
+      - "81:80"
+    volumes:
+      - $DOCKERDIR/appdata/filebrowser:/config
+      - $EXTDRIVE:/data/media
+      - $USERDIR:/data/home
+    environment:
+      TZ: $TZ
+      PUID: $PUID
+      PGID: $PGID
+    labels:
+      - "traefik.enable=true"
+      ## HTTP Routers
+      - "traefik.http.routers.filebrowser-rtr.entrypoints=https"
+      - "traefik.http.routers.filebrowser-rtr.rule=Host(`fb.$DOMAINNAME_CLOUD_SERVER`)"
+      ## Middlewares
+      - "traefik.http.routers.filebrowser-rtr.middlewares=chain-oauth@file"
+      ## HTTP Services
+      - "traefik.http.routers.filebrowser-rtr.service=filebrowser-svc"
+      - "traefik.http.services.filebrowser-svc.loadbalancer.server.port=80"
+  #Auto Book Server
+  audiobookshelf:
+    image: ghcr.io/advplyr/audiobookshelf:latest
+    ports:
+      - 13378:80
+    volumes:
+      - </path/to/audiobooks>:/audiobooks
+      - </path/to/podcasts>:/podcasts
+      - </path/to/config>:/config
+      - </path/to/metadata>:/metadata
