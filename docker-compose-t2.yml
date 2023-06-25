@@ -453,13 +453,13 @@ services:
       ## HTTP Services
       - "traefik.http.routers.filebrowser-rtr.service=filebrowser-svc"
       - "traefik.http.services.filebrowser-svc.loadbalancer.server.port=80"
-  # #Auto Book Server
-  # audiobookshelf:
-  #   image: ghcr.io/advplyr/audiobookshelf:latest
-  #   ports:
-  #     - 13378:80
-  #   volumes:
-  #     - </path/to/audiobooks>:/audiobooks
-  #     - </path/to/podcasts>:/podcasts
-  #     - </path/to/config>:/config
-  #     - </path/to/metadata>:/metadata
+  #Auto Book Server
+  audiobookshelf:
+    image: ghcr.io/advplyr/audiobookshelf:latest
+    ports:
+      - 13378:80
+    volumes:
+      - </path/to/audiobooks>:/audiobooks
+      - </path/to/podcasts>:/podcasts
+      - </path/to/config>:/config
+      - </path/to/metadata>:/metadata
