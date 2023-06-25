@@ -1,0 +1,3 @@
+sudo docker-compose -f docker-compose-t2.yml up -d
+
+sudo docker logs -tf --tail="100" traefik
