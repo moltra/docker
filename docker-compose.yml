@@ -378,9 +378,9 @@ services:
       - /dev/net/tun
     ports:
       - "8081:8080" # Exposing qBittorrent through Docker Host LAN IP
-    # #   - 8888:8888/tcp # HTTP proxy
-    # #   - 8388:8388/tcp # Shadowsocks
-    # #   - 8388:8388/udp # Shadowsocks
+      - 8073:8073/tcp  #GUI Interface for qbittorrent
+      - 56056:56056/tcp    # Port forwarded per Mullvad
+      - 56056:56056/udp
     volumes:
       - $DOCKERDIR/appdata/gluetun:/gluetun
     environment:
@@ -416,10 +416,9 @@ services:
       - $DOCKERDIR/appdata/qbittorrent:/config
       - $DATADIR/downloads:/data/downloads # Ensure that downloads folder is set to /data/downloads in qBittorrent
     environment:
-      TZ=$TZ
-      PUID=$PUID
-      PGID=$PGID
-      UMASK_SET: 002
+      - TZ=$TZ
+      - PUID=$PUID
+      - PGID=$PGID
     healthcheck: # https://github.com/qdm12/gluetun/issues/641#issuecomment-933856220
       test: "curl -sf https://example.com  || exit 1"
       interval: 1m
